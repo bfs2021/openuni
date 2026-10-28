@@ -22,7 +22,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.universities import get_university
 from app.models.chat import ChatRequest, ChatResponse, SourceItem
 from app.rag.generation import LLMProviderUnavailable, generate_answer
-from app.rag.retrieval import retrieve_chunks
+from app.rag.retrieval import RetrievalUnavailable, retrieve_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +69,18 @@ async def chat(body: ChatRequest) -> ChatResponse:
 
     # ── Retrieval ─────────────────────────────────────────────────────────────
     # Offload the blocking HTTP/vector-store calls so the event loop stays free.
-    chunks = await run_in_threadpool(
-        retrieve_chunks,
-        university_slug=body.university_slug,
-        question=body.question,
-    )
+    try:
+        chunks = await run_in_threadpool(
+            retrieve_chunks,
+            university_slug=body.university_slug,
+            question=body.question,
+        )
+    except RetrievalUnavailable as exc:
+        logger.warning("chat retrieval unavailable: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Retrieval is temporarily unavailable. Please try again shortly.",
+        ) from exc
 
     # ── Generation ────────────────────────────────────────────────────────────
     try:

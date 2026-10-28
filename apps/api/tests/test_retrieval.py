@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 import yaml
-from qdrant_client.http.exceptions import UnexpectedResponse
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from app.core import universities
 from app.core.config import get_settings
@@ -155,5 +155,77 @@ def test_retrieve_chunks_closes_client_on_query_error(
 
     monkeypatch.setattr(retrieval, "QdrantClient", FakeQdrantClient)
     with pytest.raises(RuntimeError, match="query failed"):
+        retrieval.retrieve_chunks("demo", "Any scholarships?")
+    assert len(clients) == 1 and clients[0].closed
+
+
+def test_embedding_failure_raises_retrieval_unavailable(
+    temp_universities_dir: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "post", fail)
+
+    with pytest.raises(retrieval.RetrievalUnavailable):
+        retrieval.retrieve_chunks("demo", "When are deadlines?")
+
+
+def test_qdrant_server_error_raises_retrieval_unavailable(
+    temp_universities_dir: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(retrieval, "_embed_question", lambda **_: [0.1, 0.2, 0.3])
+    clients = []
+
+    class FakeQdrantClient:
+        def __init__(self, *, url: str):
+            self.closed = False
+            clients.append(self)
+
+        def query_points(
+            self,
+            *,
+            collection_name: str,
+            query: list[float],
+            limit: int,
+            with_payload: bool,
+        ) -> SimpleNamespace:
+            raise UnexpectedResponse(
+                status_code=503,
+                reason_phrase="Service Unavailable",
+                content=b"",
+                headers=httpx.Headers({}),
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(retrieval, "QdrantClient", FakeQdrantClient)
+
+    with pytest.raises(retrieval.RetrievalUnavailable):
+        retrieval.retrieve_chunks("demo", "Any scholarships?")
+    assert len(clients) == 1 and clients[0].closed
+
+
+def test_qdrant_connection_error_raises_retrieval_unavailable(
+    temp_universities_dir: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(retrieval, "_embed_question", lambda **_: [0.1, 0.2, 0.3])
+    clients = []
+
+    class FakeQdrantClient:
+        def __init__(self, *, url: str):
+            self.closed = False
+            clients.append(self)
+
+        def query_points(self, **kwargs: object) -> None:
+            raise ResponseHandlingException(httpx.ConnectError("connection refused"))
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(retrieval, "QdrantClient", FakeQdrantClient)
+
+    with pytest.raises(retrieval.RetrievalUnavailable):
         retrieval.retrieve_chunks("demo", "Any scholarships?")
     assert len(clients) == 1 and clients[0].closed

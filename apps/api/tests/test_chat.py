@@ -29,7 +29,7 @@ from app.rag.generation import (
     GeneratedAnswer,
     LLMProviderUnavailable,
 )
-from app.rag.retrieval import RetrievedChunk
+from app.rag.retrieval import RetrievalUnavailable, RetrievedChunk
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -254,6 +254,25 @@ def test_chat_provider_unavailable_returns_503(client: TestClient, demo_universi
     )
     assert "sk-secret" not in response.text
     assert "provider exploded" not in response.text
+
+
+def test_chat_retrieval_unavailable_returns_503(client: TestClient, demo_university: None) -> None:
+    """A retrieval outage maps to a stable, non-leaking 503 response."""
+    with patch(
+        "app.routers.chat.retrieve_chunks",
+        side_effect=RetrievalUnavailable("qdrant token abc leaked detail"),
+    ):
+        response = client.post(
+            "/chat",
+            json={"university_slug": "demo", "question": "How much is tuition?"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Retrieval is temporarily unavailable. Please try again shortly."
+    )
+    assert "qdrant token" not in response.text
+    assert "leaked detail" not in response.text
 
 
 def test_chat_unexpected_generation_error_returns_500(
